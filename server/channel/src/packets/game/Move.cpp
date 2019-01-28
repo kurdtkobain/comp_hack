@@ -104,8 +104,10 @@ bool Parsers::Move::Parse(libcomp::ManagerPacket *pPacketManager,
     eState->ExpireStatusTimes(ChannelServer::GetServerTime());
     if(!eState->CanMove() || state->GetLockMovement())
     {
-        destX = originX;
-        destY = originY;
+        // Don't trust anything the client sent, just stop them at the previous
+        // destination and let them take the hit for start/stop time
+        destX = originX = eState->GetDestinationX();
+        destY = originY = eState->GetDestinationY();
         positionCorrected = true;
     }
     else if(moveCorrection)

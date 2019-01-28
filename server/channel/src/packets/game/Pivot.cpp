@@ -71,6 +71,11 @@ bool Parsers::Pivot::Parse(libcomp::ManagerPacket *pPacketManager,
         // Nothing to do, the entity is not currently active
         return true;
     }
+    else if(state->GetLockMovement())
+    {
+        // Movement locked, ignore request
+        return true;
+    }
 
     auto zone = eState->GetZone();
     if(!zone)

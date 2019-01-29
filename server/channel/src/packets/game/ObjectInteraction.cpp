@@ -92,6 +92,8 @@ bool Parsers::ObjectInteraction::Parse(libcomp::ManagerPacket *pPacketManager,
     {
         objState = npc;
         objDef = npc->GetEntity();
+
+        // Anything other than 1 hides NPCs
         isHidden = objDef->GetState() != 1;
     }
     else
@@ -102,7 +104,9 @@ bool Parsers::ObjectInteraction::Parse(libcomp::ManagerPacket *pPacketManager,
         {
             objState = obj;
             objDef = obj->GetEntity();
-            isHidden = objDef->GetState() != 1;
+
+            // 255 used for shared "hidden" state for objects
+            isHidden = objDef->GetState() == 255;
         }
     }
 
@@ -114,24 +118,29 @@ bool Parsers::ObjectInteraction::Parse(libcomp::ManagerPacket *pPacketManager,
         bool skipChecks = state->GetUserLevel() > 0;
         if(!skipChecks)
         {
-            auto cState = state->GetCharacterState();
             if(isHidden)
             {
                 LOG_WARNING(libcomp::String("Entity %1 is currently hidden"
-                    " from and cannot be interacted with by player: %1\n")
+                    " and cannot be interacted with by player: %1\n")
                     .Arg(objDef->GetID())
-                    .Arg(state->GetAccountUID().ToString()));
-            }
-            else if(cState && cState->GetDistance(objState->GetCurrentX(),
-                objState->GetCurrentY()) > MAX_INTERACT_DISTANCE)
-            {
-                LOG_WARNING(libcomp::String("Entity %1 too far from player"
-                    " character to interact with: %1\n").Arg(objDef->GetID())
                     .Arg(state->GetAccountUID().ToString()));
             }
             else
             {
-                valid = true;
+                auto cState = state->GetCharacterState();
+                cState->RefreshCurrentPosition(ChannelServer::GetServerTime());
+                if(cState->GetDistance(objState->GetCurrentX(),
+                    objState->GetCurrentY()) > MAX_INTERACT_DISTANCE)
+                {
+                    LOG_WARNING(libcomp::String("Entity %1 is too far from"
+                        " player character to interact with: %1\n")
+                        .Arg(objDef->GetID())
+                        .Arg(state->GetAccountUID().ToString()));
+                }
+                else
+                {
+                    valid = true;
+                }
             }
         }
         else

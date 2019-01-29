@@ -22,19 +22,19 @@ CMAKE_MINIMUM_REQUIRED(VERSION 3.2.3)
 #
 
 # Last year the code was changed.
-SET(VERSION_YEAR  2018)
+SET(VERSION_YEAR  2019)
 
 # Major release (1 = pixie.)
-SET(VERSION_MAJOR 3)
+SET(VERSION_MAJOR 4)
 
 # Minor release (1 = SP1).
-SET(VERSION_MINOR 9)
+SET(VERSION_MINOR 0)
 
 # Patch version (a hotfix).
-SET(VERSION_PATCH 2)
+SET(VERSION_PATCH 0)
 
 # Codename for the version.
-SET(VERSION_CODENAME "Hathor (RC2)")
+SET(VERSION_CODENAME "Hathor")
 
 #
 # END OF VERSION CONSTANTS

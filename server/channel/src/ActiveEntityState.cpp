@@ -298,22 +298,31 @@ float ActiveEntityState::GetDistance(float x, float y, bool squared)
     return squared ? dSquared : std::sqrt(dSquared);
 }
 
-float ActiveEntityState::GetMovementSpeed(bool altSpeed)
+float ActiveEntityState::GetMovementSpeed(bool ignoreSkill,
+    bool altSpeed)
 {
     int16_t speed = 0;
-    auto activated = GetActivatedAbility();
+    auto activated = ignoreSkill ? nullptr : GetActivatedAbility();
     if(altSpeed)
     {
         // Get alternate "walk" speed
         speed = GetCorrectValue(CorrectTbl::MOVE1);
     }
-    else if(activated && activated->GetChargedTime() &&
-        !activated->GetExecutionTime())
+    else if(activated)
     {
-        // Charge speed is preserved regardless of
-        return activated->GetChargeCompleteMoveSpeed();
+        // Current skill is always updated with combat state and is not
+        // set on the entity without a charge time (even if its "now"),
+        // therefore we only have the concept of charged or not
+        if(activated->GetChargedTime() < ChannelServer::GetServerTime())
+        {
+            return activated->GetChargeCompleteMoveSpeed();
+        }
+        else
+        {
+            return activated->GetChargeMoveSpeed();
+        }
     }
-    else if((GetCombatTimeOut() || activated) &&
+    else if(GetCombatTimeOut() &&
         !GetCalculatedState()->ExistingTokuseiAspectsContains(
             (int8_t)TokuseiAspectType::COMBAT_SPEED_NULL))
     {
@@ -772,7 +781,8 @@ uint32_t ActiveEntityState::StatusEffectTimeLeft(uint32_t effectType)
 }
 
 void ActiveEntityState::SetStatusEffects(
-    const std::list<std::shared_ptr<objects::StatusEffect>>& effects)
+    const std::list<std::shared_ptr<objects::StatusEffect>>& effects,
+    libcomp::DefinitionManager* definitionManager)
 {
     std::lock_guard<std::mutex> lock(mLock);
     mStatusEffects.clear();
@@ -794,7 +804,7 @@ void ActiveEntityState::SetStatusEffects(
 
     for(auto effect : effects)
     {
-        mStatusEffects[effect->GetEffect()] = effect;
+        RegisterStatusEffect(effect, definitionManager);
     }
 }
 
@@ -1196,10 +1206,11 @@ std::set<uint32_t> ActiveEntityState::AddStatusEffects(const StatusEffectChanges
 
         if(effect)
         {
-            uint32_t modEffectType = effect->GetEffect();
-            mStatusEffects[modEffectType] = effect;
+            RegisterStatusEffect(effect, definitionManager);
+
             if(mEffectsActive)
             {
+                uint32_t modEffectType = effect->GetEffect();
                 if(activateEffect)
                 {
                     ActivateStatusEffect(effect, definitionManager, now, !add);
@@ -1341,9 +1352,6 @@ void ActiveEntityState::SetStatusEffectsActive(bool activate,
             SetNextEffectTime(0, mNextUpkeep);
         }
 
-        // Reset cancel conditions
-        mCancelConditions.clear();
-
         // Set status effect expirations
         for(auto pair : mStatusEffects)
         {
@@ -1388,7 +1396,7 @@ void ActiveEntityState::SetStatusEffectsActive(bool activate,
     }
 }
 
-bool ActiveEntityState::PopEffectTicks(uint32_t time, int32_t& hpTDamage,
+uint8_t ActiveEntityState::PopEffectTicks(uint32_t time, int32_t& hpTDamage,
     int32_t& mpTDamage, int32_t& tUpkeep, std::set<uint32_t>& added,
     std::set<uint32_t>& updated, std::set<uint32_t>& removed)
 {
@@ -1404,11 +1412,12 @@ bool ActiveEntityState::PopEffectTicks(uint32_t time, int32_t& hpTDamage,
     // If effects are not active, stop now
     if(!mEffectsActive)
     {
-        return false;
+        return 0;
     }
 
     bool found = false;
     bool reregister = false;
+    bool tDamageSpecial = false;
     do
     {
         std::set<uint32_t> passed;
@@ -1464,6 +1473,8 @@ bool ActiveEntityState::PopEffectTicks(uint32_t time, int32_t& hpTDamage,
                 // Adjust T-Damage if the entity is not dead
                 if(mAlive)
                 {
+                    tDamageSpecial = HasSpecialTDamage();
+
                     if(doRegen)
                     {
                         bool skipHPRegen = false;
@@ -1476,13 +1487,12 @@ bool ActiveEntityState::PopEffectTicks(uint32_t time, int32_t& hpTDamage,
                             auto zone = GetZone();
                             auto instance = zone
                                 ? zone->GetInstance() : nullptr;
-                            auto cs = GetCoreStats();
-                            if(instance && cs && instance->GetPoisonLevel())
+                            if(instance && instance->GetPoisonLevel())
                             {
                                 skipHPRegen = true;
                                 hpTDamage = (int32_t)(hpTDamage +
                                     ceil((float)instance->GetPoisonLevel() *
-                                        0.01f * (float)cs->GetMaxHP()));
+                                        0.01f * (float)GetMaxHP()));
                             }
                         }
 
@@ -1507,7 +1517,7 @@ bool ActiveEntityState::PopEffectTicks(uint32_t time, int32_t& hpTDamage,
                     }
                 }
 
-                // T-Damage applies is every 10 seconds
+                // T-Damage application is every 10 seconds
                 mNextRegenSync = pair.first + 10;
                 next.push_back(std::pair<uint32_t, uint32_t>(0,
                     mNextRegenSync));
@@ -1543,15 +1553,19 @@ bool ActiveEntityState::PopEffectTicks(uint32_t time, int32_t& hpTDamage,
     }
 
     // If anything was popped off the map, update the entity
+    uint8_t result = tDamageSpecial ? 2 : 0;
     if(hpTDamage || mpTDamage || added.size() > 0 ||
         updated.size() > 0 || removed.size() > 0)
     {
-        return true;
+        result |= 1;
     }
-    else
-    {
-        return false;
-    }
+
+    return result;
+}
+
+bool ActiveEntityState::HasSpecialTDamage()
+{
+    return false;
 }
 
 bool ActiveEntityState::ResetUpkeep()
@@ -1754,17 +1768,6 @@ int8_t ActiveEntityState::GetNextActivatedAbilityID()
     return next;
 }
 
-void ActiveEntityState::SetStatusEffects(
-    const std::list<libcomp::ObjectReference<objects::StatusEffect>>& effects)
-{
-    std::list<std::shared_ptr<objects::StatusEffect>> l;
-    for(auto e : effects)
-    {
-        l.push_back(e.Get());
-    }
-    SetStatusEffects(l);
-}
-
 void ActiveEntityState::RemoveStatusEffects(const std::set<uint32_t>& effectTypes)
 {
     std::set<uint8_t> cancelTypes;
@@ -1913,18 +1916,6 @@ void ActiveEntityState::ActivateStatusEffect(
         return;
     }
 
-    // Mark the cancel conditions
-    for(uint16_t x = 0x0001; x < 0x0100;)
-    {
-        uint8_t x8 = (uint8_t)x;
-        if(cancel->GetCancelTypes() & x8)
-        {
-            mCancelConditions[x8].insert(effectType);
-        }
-
-        x = (uint16_t)(x << 1);
-    }
-
     // Populate restrictions
     uint8_t restr = (uint8_t)se->GetEffect()->GetRestrictions();
     if(restr & 0x01)
@@ -2066,6 +2057,28 @@ void ActiveEntityState::SetNextEffectTime(uint32_t effectType, uint32_t time)
     if(time != 0)
     {
         mNextEffectTimes[time].insert(effectType);
+    }
+}
+
+void ActiveEntityState::RegisterStatusEffect(
+    const std::shared_ptr<objects::StatusEffect>& effect,
+    libcomp::DefinitionManager* definitionManager)
+{
+    uint32_t effectType = effect->GetEffect();
+    mStatusEffects[effectType] = effect;
+
+    // Mark the cancel conditions
+    auto se = definitionManager->GetStatusData(effectType);
+    auto cancel = se->GetCancel();
+    for(uint16_t x = 0x0001; x < 0x0100;)
+    {
+        uint8_t x8 = (uint8_t)x;
+        if(cancel->GetCancelTypes() & x8)
+        {
+            mCancelConditions[x8].insert(effectType);
+        }
+
+        x = (uint16_t)(x << 1);
     }
 }
 
@@ -2250,20 +2263,24 @@ ActiveEntityStateImp<objects::Ally>::ActiveEntityStateImp()
 template<>
 void ActiveEntityStateImp<objects::Character>::SetEntity(
     const std::shared_ptr<objects::Character>& entity,
-    const std::shared_ptr<objects::MiDevilData>& devilData)
+    libcomp::DefinitionManager* definitionManager)
 {
-    (void)devilData;
+    (void)definitionManager;
 
     {
         std::lock_guard<std::mutex> lock(mLock);
         mEntity = entity;
     }
 
-    std::list<libcomp::ObjectReference<objects::StatusEffect>> effects;
+    std::list<std::shared_ptr<objects::StatusEffect>> effects;
     if(entity)
     {
         // Character should always be set but check just in case
-        effects = entity->GetStatusEffects();
+        for(auto e : entity->GetStatusEffects())
+        {
+            effects.push_back(e.Get());
+        }
+
         mAlive = entity->GetCoreStats()->GetHP() > 0;
 
         SetDisplayState(ActiveDisplayState_t::DATA_NOT_SENT);
@@ -2280,7 +2297,7 @@ void ActiveEntityStateImp<objects::Character>::SetEntity(
     SetActivatedAbility(nullptr);
     ClearSpecialActivations();
 
-    SetStatusEffects(effects);
+    SetStatusEffects(effects, definitionManager);
 
     // Reset knockback and let refresh correct
     SetKnockbackResist(0);
@@ -2290,17 +2307,21 @@ void ActiveEntityStateImp<objects::Character>::SetEntity(
 template<>
 void ActiveEntityStateImp<objects::Demon>::SetEntity(
     const std::shared_ptr<objects::Demon>& entity,
-    const std::shared_ptr<objects::MiDevilData>& devilData)
+    libcomp::DefinitionManager* definitionManager)
 {
     {
         std::lock_guard<std::mutex> lock(mLock);
         mEntity = entity;
     }
 
-    std::list<libcomp::ObjectReference<objects::StatusEffect>> effects;
+    std::list<std::shared_ptr<objects::StatusEffect>> effects;
     if(entity)
     {
-        effects = entity->GetStatusEffects();
+        for(auto e : entity->GetStatusEffects())
+        {
+            effects.push_back(e.Get());
+        }
+
         mAlive = entity->GetCoreStats()->GetHP() > 0;
 
         SetDisplayState(ActiveDisplayState_t::DATA_NOT_SENT);
@@ -2310,8 +2331,9 @@ void ActiveEntityStateImp<objects::Demon>::SetEntity(
         SetDisplayState(ActiveDisplayState_t::NOT_SET);
     }
 
-    SetStatusEffects(effects);
-    SetDevilData(devilData);
+    SetStatusEffects(effects, definitionManager);
+    SetDevilData(entity
+        ? definitionManager->GetDevilData(entity->GetType()) : nullptr);
 
     auto calcState = GetCalculatedState();
     calcState->ClearActiveTokuseiTriggers();
@@ -2328,7 +2350,7 @@ void ActiveEntityStateImp<objects::Demon>::SetEntity(
 template<>
 void ActiveEntityStateImp<objects::Enemy>::SetEntity(
     const std::shared_ptr<objects::Enemy>& entity,
-    const std::shared_ptr<objects::MiDevilData>& devilData)
+    libcomp::DefinitionManager* definitionManager)
 {
     std::lock_guard<std::mutex> lock(mLock);
     mEntity = entity;
@@ -2352,7 +2374,8 @@ void ActiveEntityStateImp<objects::Enemy>::SetEntity(
         SetFactionGroup(0);
     }
 
-    SetDevilData(devilData);
+    SetDevilData(entity
+        ? definitionManager->GetDevilData(entity->GetType()) : nullptr);
 
     // Reset knockback and let refresh correct
     SetKnockbackResist(0);
@@ -2362,7 +2385,7 @@ void ActiveEntityStateImp<objects::Enemy>::SetEntity(
 template<>
 void ActiveEntityStateImp<objects::Ally>::SetEntity(
     const std::shared_ptr<objects::Ally>& entity,
-    const std::shared_ptr<objects::MiDevilData>& devilData)
+    libcomp::DefinitionManager* definitionManager)
 {
     std::lock_guard<std::mutex> lock(mLock);
     mEntity = entity;
@@ -2386,7 +2409,8 @@ void ActiveEntityStateImp<objects::Ally>::SetEntity(
         SetFactionGroup(0);
     }
 
-    SetDevilData(devilData);
+    SetDevilData(entity
+        ? definitionManager->GetDevilData(entity->GetType()) : nullptr);
 
     // Reset knockback and let refresh correct
     SetKnockbackResist(0);
@@ -2746,19 +2770,6 @@ void ActiveEntityState::AdjustStats(
     }
 }
 
-void ActiveEntityState::BaseStatsCalculated(libcomp::DefinitionManager* definitionManager,
-    std::shared_ptr<objects::CalculatedEntityState> calcState,
-    libcomp::EnumMap<CorrectTbl, int16_t>& stats,
-    std::list<std::shared_ptr<objects::MiCorrectTbl>>& adjustments)
-{
-    (void)definitionManager;
-    (void)stats;
-    (void)adjustments;
-
-    calcState->SetEffectiveTokuseiFinal(calcState->GetEffectiveTokusei());
-    calcState->SetPendingSkillTokuseiFinal(calcState->GetPendingSkillTokusei());
-}
-
 void ActiveEntityState::UpdateNRAChances(libcomp::EnumMap<CorrectTbl, int16_t>& stats,
     std::shared_ptr<objects::CalculatedEntityState> calcState,
     const std::list<std::shared_ptr<objects::MiCorrectTbl>>& adjustments)
@@ -2929,7 +2940,6 @@ uint8_t ActiveEntityState::RecalculateDemonStats(
 
     UpdateNRAChances(stats, calcState);
     AdjustStats(correctTbls, stats, calcState, true);
-    BaseStatsCalculated(definitionManager, calcState, stats, correctTbls);
 
     CharacterManager::CalculateDependentStats(stats,
         GetCoreStats()->GetLevel(), true);

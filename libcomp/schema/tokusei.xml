@@ -104,6 +104,7 @@
             <value>DAMAGE_DEALT</value>
             <value>DAMAGE_MIN</value>
             <value>DAMAGE_TAKEN</value>
+            <value>EFFECT_POWER</value>
             <value>HP_COST_ADJUST</value>
             <value>KNOCKBACK_RECOVERY</value>
             <value>KNOCKBACK_REMOVE</value>
@@ -142,6 +143,7 @@
             <!-- Misc -->
             <value>CONSTANT_STATUS</value>
             <value>DEATH_PENALTY</value>
+            <value>FAMILIARITY_REGEN</value>
             <value>SKILL_LOCK</value>
             <value>SUMMON_STATUS</value>
             <value>SUMMON_SYNC_EXTEND</value>

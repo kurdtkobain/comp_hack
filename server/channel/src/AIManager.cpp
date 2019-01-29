@@ -393,7 +393,33 @@ void AIManager::CombatSkillComplete(
     // itself so they're not spamming skills non-stop
     bool reset = false;
     bool wait = true;
-    if(target)
+
+    bool normalProcesing = true;
+    if(aiState->ActionOverridesKeyExists("combatSkillComplete"))
+    {
+        libcomp::String fOverride = aiState->GetActionOverrides(
+            "combatSkillComplete");
+
+        Sqrat::Function f(Sqrat::RootTable(aiState->GetScript()->GetVM()),
+            fOverride.IsEmpty() ? "combatSkillComplete" : fOverride.C());
+
+        auto scriptResult = !f.IsNull()
+            ? f.Evaluate<int32_t>(eState, this, activated, target, hit) : 0;
+        if(!scriptResult || *scriptResult == -1)
+        {
+            // Do not continue
+            return;
+        }
+        else if(*scriptResult & 0x01)
+        {
+            // Skip normal processing
+            normalProcesing = false;
+            reset = (*scriptResult & 0x02) != 0;
+            wait = (*scriptResult & 0x04) == 0;
+        }
+    }
+
+    if(normalProcesing && target)
     {
         if(target->GetStatusTimes(STATUS_KNOCKBACK))
         {
@@ -1279,11 +1305,24 @@ bool AIManager::UpdateEnemyState(
     auto aiState = eState->GetAIState();
     if(aiState->GetStatus() == AIStatus_t::WANDERING && eBase)
     {
+        // If we're wandering but have opponents (typically from being hit)
+        // try to target one of them and stop here if we do
+        if(eState->GetOpponentIDs().size() > 0 &&
+            Retarget(eState, now, isNight))
+        {
+            return false;
+        }
+
         Wander(eState, eBase);
         return true;
     }
 
     auto zone = eState->GetZone();
+    if(!zone)
+    {
+        return false;
+    }
+
     int32_t targetEntityID = aiState->GetTargetEntityID();
     auto target = targetEntityID > 0
         ? zone->GetActiveEntity(targetEntityID) : nullptr;
@@ -1723,15 +1762,11 @@ std::shared_ptr<ActiveEntityState> AIManager::Retarget(
     std::list<std::shared_ptr<ActiveEntityState>> possibleTargets;
     if(opponentIDs.size() > 0)
     {
-        float aggroNormal = aiState->GetAggroValue(isNight ? 1 : 0, false,
-            AI_DEFAULT_AGGRO_RANGE);
-        float aggroCast = aiState->GetAggroValue(2, false,
-            AI_DEFAULT_AGGRO_RANGE);
-        float aggroMax = aggroNormal > aggroCast ? aggroNormal : aggroCast;
-
-        // Currently in combat, only pull from opponents
+        // Currently in combat, only pull from opponents. Use deaggro
+        // distance instead of the normal aggro distance since the AI
+        // should technically be aggro until no opponents are still around
         auto inRange = zone->GetActiveEntitiesInRadius(
-            sourceX, sourceY, aggroMax);
+            sourceX, sourceY, aiState->GetDeaggroDistance(isNight));
 
         for(auto entity : inRange)
         {

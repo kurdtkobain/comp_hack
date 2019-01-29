@@ -1,3 +1,16 @@
+comphack (4.0.0) xenial; urgency=low
+
+  * Cathedral of Content tool added
+  * All useful binary data structures added to bdpatch
+  * More accurate tokusei and status effect handling
+  * Collision handling overhaul
+  * Configurable GMand user levels
+  * .msi component selection
+  * Promo code API
+  * Tons of bug fixes!
+
+ -- COMP Omega <compomega@tutanota.com>  Sun, 27 Jan 2019 10:16:15 -0700
+
 comphack (3.9.2) xenial; urgency=low
 
   * Hathor Release Candidate 2 includes:
